@@ -9,7 +9,7 @@ from io import StringIO
 
 # Configuração da página
 st.set_page_config(
-    page_title="Agente de Análise de Dados CSV - Groq",
+    page_title="Análise de Dados CSV",
     page_icon="📊",
     layout="wide"
 )
