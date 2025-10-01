@@ -1,520 +1,585 @@
-import streamlit as st
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-import numpy as np
-from groq import Groq
+
+from __future__ import annotations
+
 import os
 from io import StringIO
+from typing import Dict, List, Optional, Tuple
 
-# Configuração da página
-st.set_page_config(
-    page_title="Análise de Dados CSV",
-    page_icon="📊",
-    layout="wide"
-)
+import numpy as np
+import pandas as pd
+import streamlit as st
+import matplotlib.pyplot as plt
 
-# Título principal
-st.title("🤖 Agente de Análise Exploratória de Dados (E.D.A.)")
-st.markdown("**Ferramenta inteligente para análise de qualquer arquivo CSV com IA Groq**")
+# Opcional (usado apenas no heatmap). Se não desejar a dependência, ver TODO abaixo
+import seaborn as sns  # noqa: F401
 
-# Upload do arquivo
-uploaded_file = st.file_uploader(
-    "Carregue seu arquivo CSV para análise", 
-    type=['csv'],
-    help="Selecione um arquivo CSV para realizar a análise exploratória completa"
-)
+try:
+    from groq import Groq  # type: ignore
+except Exception:
+    Groq = None 
 
-if uploaded_file is not None:
-    # Carregar os dados
+# =========================
+# Configurações e Constantes
+# =========================
+
+APP_TITLE = "🤖 Agente de Análise de Dados (CSV)"
+APP_SUBTITLE = "Ferramenta inteligente para análise de qualquer arquivo CSV com IA"
+PAGE_CONFIG = dict(page_title="Análise de Dados CSV", page_icon="📊", layout="wide")
+
+# Limites de renderização para não travar a UI em datasets grandes
+MAX_NUMERIC_HISTS = 12
+MAX_CATEGORICAL_BARS = 6
+MAX_BOX_PLOTS = 8
+
+# Amostragem para operações pesadas
+SAMPLE_FOR_PLOTS = 100_000  # se o dataset for maior, faz uma amostra para gráficos
+SAMPLE_FOR_STATS = 250_000  # amostra para estatísticas e correlação
+
+DARK_BG = "#0E1117"
+
+# =========================
+# Setup de página e estilo
+# =========================
+
+st.set_page_config(**PAGE_CONFIG)
+st.title(APP_TITLE)
+st.markdown(f"**{APP_SUBTITLE}**")
+
+# =========================
+# Funções utilitárias
+# =========================
+
+def _maybe_sample(df: pd.DataFrame, max_rows: int) -> pd.DataFrame:
+    """Retorna amostra do DataFrame caso ele exceda max_rows (mantendo aleatoriedade)."""
+    if len(df) > max_rows:
+        return df.sample(n=max_rows, random_state=42)
+    return df
+
+
+@st.cache_data(show_spinner=False)
+def load_csv(file) -> Tuple[pd.DataFrame, Optional[str]]:
+    """
+    Lê CSV de forma resiliente:
+    - tenta detectar separador;
+    - tenta encoding utf-8 e fallback para latin-1;
+    - desativa low_memory para melhor inferência;
+    Retorna (dataframe, erro_str).
+    """
     try:
-        data = pd.read_csv(uploaded_file)
-        st.success(f"✅ Arquivo carregado com sucesso! {data.shape[0]} linhas e {data.shape[1]} colunas.")
-        
-        # Criar abas para organizar a análise
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-            "📋 Visão Geral", 
-            "📊 Distribuições", 
-            "🔍 Correlações", 
-            "📈 Tendências", 
-            "⚠️ Anomalias", 
-            "🤖 Consulta IA"
-        ])
-        
-        with tab1:
-            st.header("📋 Visão Geral dos Dados")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("Informações Básicas")
-                st.write(f"**Número de linhas:** {data.shape[0]:,}")
-                st.write(f"**Número de colunas:** {data.shape[1]:,}")
-                st.write(f"**Tamanho em memória:** {data.memory_usage(deep=True).sum() / 1024**2:.2f} MB")
-                
-                st.subheader("Tipos de Dados")
-                tipos_dados = pd.DataFrame({
-                    'Coluna': data.dtypes.index,
-                    'Tipo': data.dtypes.values.astype(str),
-                    'Valores Únicos': [data[col].nunique() for col in data.columns],
-                    'Valores Nulos': [data[col].isnull().sum() for col in data.columns],
-                    '% Nulos': [f"{(data[col].isnull().sum() / len(data) * 100):.1f}%" for col in data.columns]
-                })
-                st.dataframe(tipos_dados, use_container_width=True)
-            
-            with col2:
-                st.subheader("Primeiras 10 Linhas")
-                st.dataframe(data.head(10), use_container_width=True)
-                
-                st.subheader("Estatísticas Descritivas")
-                st.dataframe(data.describe(), use_container_width=True)
-        
-        with tab2:
-            st.header("📊 Distribuição das Variáveis")
-            
-            # Separar variáveis numéricas e categóricas
-            numeric_cols = data.select_dtypes(include=[np.number]).columns.tolist()
-            categorical_cols = data.select_dtypes(include=['object', 'category']).columns.tolist()
-            
-            if numeric_cols:
-                st.subheader("Variáveis Numéricas")
-                
-                # Configurar estilo com alto contraste
-                plt.style.use('dark_background')
-                
-                # Criar histogramas para variáveis numéricas
-                num_cols_to_show = min(len(numeric_cols), 12)  # Limitar para não sobrecarregar
-                cols_per_row = 3
-                rows = (num_cols_to_show + cols_per_row - 1) // cols_per_row
-                
-                fig, axes = plt.subplots(rows, cols_per_row, figsize=(15, 5*rows))
-                fig.patch.set_facecolor('#0E1117')
-                
-                if rows == 1:
-                    axes = axes.reshape(1, -1) if num_cols_to_show > 1 else [axes]
-                
-                for i, col in enumerate(numeric_cols[:num_cols_to_show]):
-                    row = i // cols_per_row
-                    col_idx = i % cols_per_row
-                    
-                    ax = axes[row][col_idx] if rows > 1 else axes[col_idx]
-                    
-                    # Remover outliers extremos para melhor visualização
-                    Q1 = data[col].quantile(0.01)
-                    Q3 = data[col].quantile(0.99)
-                    filtered_data = data[col][(data[col] >= Q1) & (data[col] <= Q3)]
-                    
-                    ax.hist(filtered_data, bins=30, color='cyan', alpha=0.7, edgecolor='white')
-                    ax.set_title(f'Distribuição: {col}', color='white', fontsize=10)
-                    ax.set_facecolor('#0E1117')
-                    ax.tick_params(colors='white', labelsize=8)
-                    ax.grid(True, alpha=0.3)
-                
-                # Remover subplots vazios
-                for i in range(num_cols_to_show, rows * cols_per_row):
-                    row = i // cols_per_row
-                    col_idx = i % cols_per_row
-                    if rows > 1:
-                        fig.delaxes(axes[row][col_idx])
-                    else:
-                        fig.delaxes(axes[col_idx])
-                
-                plt.tight_layout()
-                st.pyplot(fig)
-                plt.close()
-            
-            if categorical_cols:
-                st.subheader("Variáveis Categóricas")
-                
-                for col in categorical_cols[:6]:  # Limitar a 6 variáveis categóricas
-                    value_counts = data[col].value_counts().head(10)
-                    
-                    fig, ax = plt.subplots(figsize=(10, 6))
-                    fig.patch.set_facecolor('#0E1117')
-                    
-                    bars = ax.bar(range(len(value_counts)), value_counts.values, color='lightcoral', alpha=0.8)
-                    ax.set_title(f'Distribuição: {col}', color='white', fontsize=14)
-                    ax.set_xticks(range(len(value_counts)))
-                    ax.set_xticklabels(value_counts.index, rotation=45, ha='right', color='white')
-                    ax.set_facecolor('#0E1117')
-                    ax.tick_params(colors='white')
-                    ax.grid(True, alpha=0.3)
-                    
-                    # Adicionar valores nas barras
-                    for bar, value in zip(bars, value_counts.values):
-                        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(value_counts.values)*0.01,
-                               f'{value:,}', ha='center', va='bottom', color='white', fontsize=9)
-                    
-                    plt.tight_layout()
-                    st.pyplot(fig)
-                    plt.close()
-        
-        with tab3:
-            st.header("🔍 Correlações entre Variáveis")
-            
-            if len(numeric_cols) > 1:
-                # Matriz de correlação
-                correlation_matrix = data[numeric_cols].corr()
-                
-                fig, ax = plt.subplots(figsize=(12, 10))
-                fig.patch.set_facecolor('#0E1117')
-                
-                # Usar colormap com bom contraste
-                sns.heatmap(correlation_matrix, 
-                           annot=True, 
-                           cmap='RdYlBu_r', 
-                           center=0,
-                           square=True,
-                           fmt='.2f',
-                           cbar_kws={'shrink': 0.8},
-                           ax=ax)
-                
-                ax.set_title('Matriz de Correlação', color='white', fontsize=16, pad=20)
-                ax.set_facecolor('#0E1117')
-                plt.xticks(rotation=45, ha='right', color='white')
-                plt.yticks(rotation=0, color='white')
-                
-                plt.tight_layout()
-                st.pyplot(fig)
-                plt.close()
-                
-                # Correlações mais fortes
-                st.subheader("Correlações Mais Significativas")
-                correlations = []
-                for i in range(len(correlation_matrix.columns)):
-                    for j in range(i+1, len(correlation_matrix.columns)):
-                        corr_value = correlation_matrix.iloc[i, j]
-                        if abs(corr_value) > 0.1:  # Apenas correlações significativas
-                            correlations.append({
-                                'Variável 1': correlation_matrix.columns[i],
-                                'Variável 2': correlation_matrix.columns[j],
-                                'Correlação': corr_value,
-                                'Força': 'Forte' if abs(corr_value) > 0.7 else 'Moderada' if abs(corr_value) > 0.3 else 'Fraca'
-                            })
-                
-                if correlations:
-                    corr_df = pd.DataFrame(correlations).sort_values('Correlação', key=abs, ascending=False)
-                    st.dataframe(corr_df, use_container_width=True)
-                else:
-                    st.info("Não foram encontradas correlações significativas entre as variáveis.")
-            else:
-                st.info("É necessário ter pelo menos 2 variáveis numéricas para calcular correlações.")
-        
-        with tab4:
-            st.header("📈 Análise de Tendências")
-            
-            # Verificar se existe coluna de tempo/data
-            time_cols = []
-            for col in data.columns:
-                if 'time' in col.lower() or 'date' in col.lower() or 'timestamp' in col.lower():
-                    time_cols.append(col)
-            
-            if time_cols:
-                st.subheader("Tendências Temporais")
-                time_col = st.selectbox("Selecione a coluna temporal:", time_cols)
-                
-                if time_col and len(numeric_cols) > 0:
-                    numeric_col = st.selectbox("Selecione a variável para análise temporal:", numeric_cols)
-                    
-                    fig, ax = plt.subplots(figsize=(12, 6))
-                    fig.patch.set_facecolor('#0E1117')
-                    
-                    # Ordenar por tempo e plotar
-                    data_sorted = data.sort_values(time_col)
-                    ax.plot(range(len(data_sorted)), data_sorted[numeric_col], color='cyan', alpha=0.7)
-                    ax.set_title(f'Tendência Temporal: {numeric_col}', color='white', fontsize=14)
-                    ax.set_xlabel('Índice Temporal', color='white')
-                    ax.set_ylabel(numeric_col, color='white')
-                    ax.set_facecolor('#0E1117')
-                    ax.tick_params(colors='white')
-                    ax.grid(True, alpha=0.3)
-                    
-                    plt.tight_layout()
-                    st.pyplot(fig)
-                    plt.close()
-            else:
-                st.info("Não foram identificadas colunas temporais no dataset.")
-            
-            # Análise de padrões em variáveis categóricas
-            if categorical_cols:
-                st.subheader("Padrões em Variáveis Categóricas")
-                cat_col = st.selectbox("Selecione uma variável categórica:", categorical_cols)
-                
-                if cat_col:
-                    # Valores mais e menos frequentes
-                    value_counts = data[cat_col].value_counts()
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.write("**Valores Mais Frequentes:**")
-                        st.dataframe(value_counts.head(10).reset_index())
-                    
-                    with col2:
-                        st.write("**Valores Menos Frequentes:**")
-                        st.dataframe(value_counts.tail(10).reset_index())
-        
-        with tab5:
-            st.header("⚠️ Detecção de Anomalias")
-            
-            if numeric_cols:
-                st.subheader("Outliers por Variável")
-                
-                outliers_summary = []
-                
-                for col in numeric_cols:
-                    Q1 = data[col].quantile(0.25)
-                    Q3 = data[col].quantile(0.75)
-                    IQR = Q3 - Q1
-                    lower_bound = Q1 - 1.5 * IQR
-                    upper_bound = Q3 + 1.5 * IQR
-                    
-                    outliers = data[(data[col] < lower_bound) | (data[col] > upper_bound)]
-                    
-                    outliers_summary.append({
-                        'Variável': col,
-                        'Total de Outliers': len(outliers),
-                        'Percentual': f"{(len(outliers) / len(data) * 100):.2f}%",
-                        'Limite Inferior': f"{lower_bound:.2f}",
-                        'Limite Superior': f"{upper_bound:.2f}",
-                        'Valor Mínimo': f"{data[col].min():.2f}",
-                        'Valor Máximo': f"{data[col].max():.2f}"
-                    })
-                
-                outliers_df = pd.DataFrame(outliers_summary)
-                st.dataframe(outliers_df, use_container_width=True)
-                
-                # Boxplots para visualizar outliers
-                st.subheader("Visualização de Outliers (Boxplots)")
-                
-                num_cols_to_plot = min(len(numeric_cols), 8)
-                cols_per_row = 4
-                rows = (num_cols_to_plot + cols_per_row - 1) // cols_per_row
-                
-                fig, axes = plt.subplots(rows, cols_per_row, figsize=(16, 4*rows))
-                fig.patch.set_facecolor('#0E1117')
-                
-                if rows == 1:
-                    axes = axes.reshape(1, -1) if num_cols_to_plot > 1 else [axes]
-                
-                for i, col in enumerate(numeric_cols[:num_cols_to_plot]):
-                    row = i // cols_per_row
-                    col_idx = i % cols_per_row
-                    
-                    ax = axes[row][col_idx] if rows > 1 else axes[col_idx]
-                    
-                    bp = ax.boxplot(data[col].dropna(), patch_artist=True)
-                    bp['boxes'][0].set_facecolor('lightblue')
-                    bp['boxes'][0].set_alpha(0.7)
-                    
-                    ax.set_title(f'{col}', color='white', fontsize=10)
-                    ax.set_facecolor('#0E1117')
-                    ax.tick_params(colors='white', labelsize=8)
-                    ax.grid(True, alpha=0.3)
-                
-                # Remover subplots vazios
-                for i in range(num_cols_to_plot, rows * cols_per_row):
-                    row = i // cols_per_row
-                    col_idx = i % cols_per_row
-                    if rows > 1:
-                        fig.delaxes(axes[row][col_idx])
-                    else:
-                        fig.delaxes(axes[col_idx])
-                
-                plt.tight_layout()
-                st.pyplot(fig)
-                plt.close()
-            else:
-                st.info("Não há variáveis numéricas para análise de outliers.")
-        
-        with tab6:
-            st.header("🤖 Consulta Inteligente com IA Groq")
-            st.markdown("Faça perguntas sobre seus dados e obtenha insights inteligentes com modelos avançados!")
-            
-            # Configuração da API
-            col1, col2 = st.columns([2, 1])
-            
-            with col1:
-                api_key = st.text_input(
-                    "🔑 Insira sua chave da API da Groq:", 
-                    type="password",
-                    help="Sua chave será usada apenas para esta sessão e não será armazenada."
-                )
-            
-            with col2:
-                # Seleção do modelo
-                model_options = {
-                    "llama-3.3-70b-versatile": "🦙 Llama 3.3 70B (Recomendado)",
-                    "llama-3.1-8b-instant": "🦙 Llama 3.1 8B (Rápido)",
-                    "openai/gpt-oss-120b": "🧠 GPT OSS 120B (Poderoso)",
-                    "openai/gpt-oss-20b": "🧠 GPT OSS 20B (Eficiente)"
-                }
-                
-                selected_model = st.selectbox(
-                    "🧠 Escolha o modelo:",
-                    options=list(model_options.keys()),
-                    format_func=lambda x: model_options[x],
-                    index=0
-                )
-            
-            if api_key:
-                # Configurar cliente Groq
-                client = Groq(api_key=api_key)
-                
-                # Preparar contexto dos dados
-                context = f"""
-                CONTEXTO DO DATASET:
-                - Número de linhas: {data.shape[0]:,}
-                - Número de colunas: {data.shape[1]:,}
-                - Colunas: {', '.join(data.columns.tolist())}
-                
-                TIPOS DE DADOS:
-                {data.dtypes.to_string()}
-                
-                ESTATÍSTICAS DESCRITIVAS (variáveis numéricas):
-                {data.describe().to_string() if len(numeric_cols) > 0 else 'Não há variáveis numéricas'}
-                
-                VALORES ÚNICOS POR COLUNA:
-                {pd.Series({col: data[col].nunique() for col in data.columns}).to_string()}
-                
-                VALORES NULOS:
-                {data.isnull().sum().to_string()}
-                """
-                
-                # Input para pergunta do usuário
-                user_question = st.text_area(
-                    "💭 Sua pergunta sobre os dados:",
-                    placeholder="Exemplo: Quais são as principais características deste dataset? Existem padrões interessantes? Como estão distribuídas as variáveis?",
-                    height=100
-                )
-                
-                # Configurações avançadas
-                with st.expander("⚙️ Configurações Avançadas"):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        max_tokens = st.slider("Máximo de tokens:", 100, 2000, 1000)
-                        temperature = st.slider("Criatividade (temperature):", 0.0, 1.0, 0.7, 0.1)
-                    with col2:
-                        system_prompt = st.text_area(
-                            "Prompt do sistema (opcional):",
-                            value="Você é um especialista em análise de dados e ciência de dados.",
-                            height=100
-                        )
-                
-                if st.button("🚀 Analisar com IA", type="primary"):
-                    if user_question.strip():
-                        with st.spinner(f"🤖 Analisando com {model_options[selected_model]}..."):
-                            try:
-                                # Criar prompt otimizado
-                                prompt = f"""
-                                Você é um especialista em análise de dados. Analise o seguinte dataset e responda à pergunta do usuário de forma clara e detalhada.
-                                
-                                {context}
-                                
-                                PERGUNTA DO USUÁRIO: {user_question}
-                                
-                                Por favor, forneça uma resposta detalhada e insights úteis baseados nos dados apresentados. Se possível, sugira análises adicionais que poderiam ser interessantes.
-                                """
-                                
-                                # Chamar API Groq
-                                response = client.chat.completions.create(
-                                    model=selected_model,
-                                    messages=[
-                                        {"role": "system", "content": system_prompt},
-                                        {"role": "user", "content": prompt}
-                                    ],
-                                    max_tokens=max_tokens,
-                                    temperature=temperature
-                                )
-                                
-                                # Exibir resposta
-                                st.success("✅ Análise concluída!")
-                                st.markdown("### 🎯 Resposta da IA:")
-                                st.markdown(response.choices[0].message.content)
-                                
-                                # Mostrar informações sobre o uso
-                                if hasattr(response, 'usage'):
-                                    with st.expander("📊 Informações de Uso"):
-                                        st.write(f"**Tokens usados:** {response.usage.total_tokens}")
-                                        st.write(f"**Modelo:** {selected_model}")
-                                        st.write(f"**Tempo de resposta:** Muito rápido ⚡")
-                                
-                            except Exception as e:
-                                st.error(f"❌ Erro ao consultar a API da Groq: {str(e)}")
-                                st.info("Verifique se sua chave da API está correta e se você tem créditos disponíveis.")
-                    else:
-                        st.warning("⚠️ Por favor, digite uma pergunta antes de analisar.")
-            else:
-                st.info("🔑 Insira sua chave da API da Groq para usar a funcionalidade de consulta inteligente.")
-                st.markdown("""
-                **Como obter sua chave da API:**
-                1. Acesse [console.groq.com](https://console.groq.com)
-                2. Faça login ou crie uma conta gratuita
-                3. Vá para API Keys
-                4. Crie uma nova chave
-                5. Cole a chave no campo acima
-                
-                **Vantagens da Groq:**
-                - ⚡ **Extremamente rápida** - até 10x mais rápida que outras APIs
-                - 💰 **Muito econômica** - tier gratuito generoso
-                - 🧠 **Modelos de ponta** - Llama 3 70B, Mixtral, Gemma
-                - 🔒 **Segura e confiável** - infraestrutura robusta
-                """)
-    
-    except Exception as e:
-        st.error(f"❌ Erro ao carregar o arquivo: {str(e)}")
-        st.info("Verifique se o arquivo está no formato CSV correto.")
+        # Detecta separador heurístico
+        sample = file.read(2_000_000)
+        if isinstance(sample, bytes):
+            # tentativa encoding primária
+            text = None
+            try:
+                text = sample.decode("utf-8")
+            except Exception:
+                try:
+                    text = sample.decode("latin-1")
+                except Exception:
+                    return pd.DataFrame(), "Não foi possível detectar encoding (utf-8/latin-1)."
 
+            sep = "," if text.count(",") >= text.count(";") else ";"
+            file.seek(0)
+            data = pd.read_csv(file, sep=sep, low_memory=False)
+        else:
+            # Streamlit normalmente entrega um buffer binário
+            file.seek(0)
+            data = pd.read_csv(file, low_memory=False)
+        return data, None
+    except Exception as e:
+        return pd.DataFrame(), f"Erro ao carregar CSV: {e}"
+
+
+@st.cache_data(show_spinner=False)
+def get_overview(data: pd.DataFrame) -> Dict[str, object]:
+    """Retorna dicionário com visão geral e tabelas auxiliares."""
+    memory_mb = data.memory_usage(deep=True).sum() / 1024 ** 2
+    tipos_dados = pd.DataFrame({
+        "Coluna": data.columns,
+        "Tipo": data.dtypes.astype(str).values,
+        "Valores Únicos": [data[c].nunique(dropna=True) for c in data.columns],
+        "Valores Nulos": [int(data[c].isna().sum()) for c in data.columns],
+        "% Nulos": [f"{(data[c].isna().mean() * 100):.1f}%" for c in data.columns],
+    })
+
+    desc = None
+    numeric_cols = data.select_dtypes(include=[np.number]).columns.tolist()
+    if numeric_cols:
+        # amostra para acelerar describe em datasets gigantes
+        data_stats = _maybe_sample(data[numeric_cols], SAMPLE_FOR_STATS)
+        desc = data_stats.describe()
+
+    return {
+        "shape": data.shape,
+        "memory_mb": memory_mb,
+        "tipos_dados": tipos_dados,
+        "desc": desc,
+        "numeric_cols": numeric_cols,
+        "categorical_cols": data.select_dtypes(include=["object", "category"]).columns.tolist(),
+    }
+
+
+def _setup_dark_axes(ax):
+    """Aplica tema dark consistente em cada eixo."""
+    ax.set_facecolor(DARK_BG)
+    ax.tick_params(colors="white", labelsize=8)
+    ax.grid(True, alpha=0.3)
+
+
+def _new_fig(size=(12, 6)):
+    fig, ax = plt.subplots(figsize=size)
+    fig.patch.set_facecolor(DARK_BG)
+    return fig, ax
+
+
+def _time_columns(data: pd.DataFrame) -> List[str]:
+    """Detecta colunas temporais por nome e parse confiável."""
+    candidates = [c for c in data.columns if any(w in c.lower() for w in ("time", "date", "timestamp", "data", "dt_"))]
+    parsed = []
+    for c in candidates:
+        try:
+            pd.to_datetime(data[c], errors="raise")  # valida parse
+            parsed.append(c)
+        except Exception:
+            # tenta parse brando
+            if pd.to_datetime(data[c], errors="coerce").notna().any():
+                parsed.append(c)
+    return list(dict.fromkeys(parsed))
+
+
+def _safe_corr(df: pd.DataFrame) -> pd.DataFrame:
+    """Correlação protegida contra constantes/NaN."""
+    df2 = df.select_dtypes(include=[np.number]).copy()
+    df2 = df2.loc[:, df2.nunique(dropna=True) > 1]  # remove colunas constantes
+    if df2.empty or df2.shape[1] < 2:
+        return pd.DataFrame()
+    # amostra para acelerar
+    df2 = _maybe_sample(df2, SAMPLE_FOR_STATS)
+    return df2.corr(numeric_only=True)
+
+
+def _top_frequencies(s: pd.Series, k: int = 10) -> pd.Series:
+    """Top-k frequências (com limpeza de NaN)."""
+    return s.dropna().astype(str).value_counts().head(k)
+
+
+# =========================
+# Seções de UI (tabs)
+# =========================
+
+def render_tab_overview(data: pd.DataFrame, overview: Dict[str, object]) -> None:
+    st.header("📋 Visão Geral dos Dados")
+    c1, c2 = st.columns(2)
+
+    with c1:
+        st.subheader("Informações Básicas")
+        st.write(f"**Número de linhas:** {overview['shape'][0]:,}")
+        st.write(f"**Número de colunas:** {overview['shape'][1]:,}")
+        st.write(f"**Tamanho em memória:** {overview['memory_mb']:.2f} MB")
+
+        st.subheader("Tipos de Dados")
+        st.dataframe(overview["tipos_dados"], use_container_width=True)
+
+    with c2:
+        st.subheader("Primeiras 10 Linhas")
+        st.dataframe(data.head(10), use_container_width=True)
+
+        st.subheader("Estatísticas Descritivas")
+        if overview["desc"] is not None:
+            st.dataframe(overview["desc"], use_container_width=True)
+        else:
+            st.info("Não há variáveis numéricas para descrever.")
+
+
+def render_tab_distributions(data: pd.DataFrame, numeric_cols: List[str], categorical_cols: List[str]) -> None:
+    st.header("📊 Distribuição das Variáveis")
+
+    # Numéricas
+    if numeric_cols:
+        st.subheader("Variáveis Numéricas")
+        numeric_cols_to_plot = numeric_cols[:MAX_NUMERIC_HISTS]
+        cols_per_row = 3
+        rows = (len(numeric_cols_to_plot) + cols_per_row - 1) // cols_per_row
+
+        # amostra para gráficos
+        data_plot = _maybe_sample(data[numeric_cols], SAMPLE_FOR_PLOTS)
+
+        fig, axes = plt.subplots(rows, cols_per_row, figsize=(15, 5 * rows))
+        fig.patch.set_facecolor(DARK_BG)
+        if rows == 1:
+            axes = axes.reshape(1, -1) if len(numeric_cols_to_plot) > 1 else [axes]
+
+        for i, col in enumerate(numeric_cols_to_plot):
+            r, c = i // cols_per_row, i % cols_per_row
+            ax = axes[r][c] if rows > 1 else axes[c]
+
+            # Remoção de extremos p/ visualização
+            Q1, Q3 = data_plot[col].quantile([0.01, 0.99])
+            filtered = data_plot[col].clip(lower=Q1, upper=Q3)
+
+            ax.hist(filtered.dropna(), bins=30, alpha=0.7, edgecolor="white")
+            ax.set_title(f"Distribuição: {col}", color="white", fontsize=10)
+            _setup_dark_axes(ax)
+
+        # Remove subplots vazios
+        for i in range(len(numeric_cols_to_plot), rows * cols_per_row):
+            r, c = i // cols_per_row, i % cols_per_row
+            if rows > 1:
+                fig.delaxes(axes[r][c])
+            else:
+                fig.delaxes(axes[c])
+
+        plt.tight_layout()
+        st.pyplot(fig)
+        plt.close()
+
+    # Categóricas
+    if categorical_cols:
+        st.subheader("Variáveis Categóricas")
+        for col in categorical_cols[:MAX_CATEGORICAL_BARS]:
+            vc = _top_frequencies(data[col])
+            fig, ax = _new_fig((10, 6))
+            bars = ax.bar(range(len(vc)), vc.values, alpha=0.85)
+            ax.set_title(f"Distribuição: {col}", color="white", fontsize=14)
+            ax.set_xticks(range(len(vc)))
+            ax.set_xticklabels(vc.index, rotation=45, ha="right", color="white")
+            _setup_dark_axes(ax)
+
+            # labels nas barras
+            height_max = vc.values.max() if len(vc) else 0
+            for b, v in zip(bars, vc.values):
+                ax.text(b.get_x() + b.get_width() / 2.0, b.get_height() + height_max * 0.01, f"{v:,}",
+                        ha="center", va="bottom", color="white", fontsize=9)
+
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close()
+
+
+def render_tab_correlations(data: pd.DataFrame, numeric_cols: List[str]) -> None:
+    st.header("🔍 Correlações entre Variáveis")
+
+    if len(numeric_cols) < 2:
+        st.info("É necessário ter pelo menos 2 variáveis numéricas para calcular correlações.")
+        return
+
+    corr = _safe_corr(data[numeric_cols])
+    if corr.empty:
+        st.info("Não foram encontradas correlações calculáveis (colunas constantes ou insuficientes).")
+        return
+
+    # Heatmap
+    fig, ax = plt.subplots(figsize=(12, 10))
+    fig.patch.set_facecolor(DARK_BG)
+
+    # TODO: Se quiser remover seaborn da stack, substitua por pcolormesh do matplotlib.
+    sns.heatmap(
+        corr,
+        annot=True,
+        cmap="RdYlBu_r",
+        center=0,
+        square=True,
+        fmt=".2f",
+        cbar_kws={"shrink": 0.8},
+        ax=ax,
+    )
+    ax.set_title("Matriz de Correlação", color="white", fontsize=16, pad=20)
+    ax.set_facecolor(DARK_BG)
+    plt.xticks(rotation=45, ha="right", color="white")
+    plt.yticks(rotation=0, color="white")
+    plt.tight_layout()
+    st.pyplot(fig)
+    plt.close()
+
+    # Top correlações
+    st.subheader("Correlações Mais Significativas")
+    pairs = []
+    cols = corr.columns.tolist()
+    for i in range(len(cols)):
+        for j in range(i + 1, len(cols)):
+            v = corr.iloc[i, j]
+            if pd.notna(v) and abs(v) > 0.1:
+                pairs.append({
+                    "Variável 1": cols[i],
+                    "Variável 2": cols[j],
+                    "Correlação": float(v),
+                    "Força": "Forte" if abs(v) > 0.7 else ("Moderada" if abs(v) > 0.3 else "Fraca")
+                })
+    if pairs:
+        df_pairs = pd.DataFrame(pairs).sort_values("Correlação", key=lambda s: s.abs(), ascending=False)
+        st.dataframe(df_pairs, use_container_width=True)
+    else:
+        st.info("Não foram encontradas correlações significativas.")
+
+
+def render_tab_trends(data: pd.DataFrame, numeric_cols: List[str], categorical_cols: List[str]) -> None:
+    st.header("📈 Análise de Tendências")
+
+    # Colunas temporais
+    tcols = _time_columns(data)
+    if tcols:
+        st.subheader("Tendências Temporais")
+
+        time_col = st.selectbox("Selecione a coluna temporal:", tcols)
+        numeric_col = st.selectbox("Selecione a variável para análise temporal:", numeric_cols) if numeric_cols else None
+
+        if time_col and numeric_col:
+            # Ordena e converte tempo de forma confiável
+            d = data[[time_col, numeric_col]].copy()
+            d[time_col] = pd.to_datetime(d[time_col], errors="coerce")
+            d = d.dropna(subset=[time_col])
+            d = d.sort_values(time_col)
+
+            # Amostra para gráfico
+            d = _maybe_sample(d, SAMPLE_FOR_PLOTS)
+
+            fig, ax = _new_fig((12, 6))
+            ax.plot(d[time_col], d[numeric_col], alpha=0.8)
+            ax.set_title(f"Tendência Temporal: {numeric_col}", color="white", fontsize=14)
+            ax.set_xlabel("Tempo", color="white")
+            ax.set_ylabel(numeric_col, color="white")
+            _setup_dark_axes(ax)
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close()
+    else:
+        st.info("Não foram identificadas colunas temporais no dataset.")
+
+    # Padrões categóricos
+    if categorical_cols:
+        st.subheader("Padrões em Variáveis Categóricas")
+        cat_col = st.selectbox("Selecione uma variável categórica:", categorical_cols)
+        if cat_col:
+            vc = data[cat_col].value_counts(dropna=True)
+            c1, c2 = st.columns(2)
+            with c1:
+                st.write("**Valores Mais Frequentes:**")
+                st.dataframe(vc.head(10).reset_index(names=[cat_col, "contagem"]), use_container_width=True)
+            with c2:
+                st.write("**Valores Menos Frequentes:**")
+                st.dataframe(vc.tail(10).reset_index(names=[cat_col, "contagem"]), use_container_width=True)
+
+
+def render_tab_outliers(data: pd.DataFrame, numeric_cols: List[str]) -> None:
+    st.header("⚠️ Detecção de Anomalias")
+
+    if not numeric_cols:
+        st.info("Não há variáveis numéricas para análise de outliers.")
+        return
+
+    st.subheader("Outliers por Variável")
+
+    # Amostra para IQR em datasets muito grandes
+    d = _maybe_sample(data[numeric_cols], SAMPLE_FOR_STATS)
+
+    summary = []
+    for col in numeric_cols:
+        s = d[col].dropna()
+        if s.empty:
+            continue
+        Q1, Q3 = s.quantile([0.25, 0.75])
+        IQR = Q3 - Q1
+        lower, upper = Q1 - 1.5 * IQR, Q3 + 1.5 * IQR
+        mask = (s < lower) | (s > upper)
+        count = int(mask.sum())
+        pct = (count / len(s)) * 100
+
+        summary.append({
+            "Variável": col,
+            "Total de Outliers": count,
+            "Percentual": f"{pct:.2f}%",
+            "Limite Inferior": f"{lower:.2f}",
+            "Limite Superior": f"{upper:.2f}",
+            "Valor Mínimo": f"{s.min():.2f}",
+            "Valor Máximo": f"{s.max():.2f}",
+        })
+
+    st.dataframe(pd.DataFrame(summary), use_container_width=True)
+
+    # Boxplots
+    st.subheader("Visualização de Outliers (Boxplots)")
+    cols_to_plot = numeric_cols[:MAX_BOX_PLOTS]
+    cols_per_row = 4
+    rows = (len(cols_to_plot) + cols_per_row - 1) // cols_per_row
+    fig, axes = plt.subplots(rows, cols_per_row, figsize=(16, 4 * rows))
+    fig.patch.set_facecolor(DARK_BG)
+    if rows == 1:
+        axes = axes.reshape(1, -1) if len(cols_to_plot) > 1 else [axes]
+
+    for i, col in enumerate(cols_to_plot):
+        r, c = i // cols_per_row, i % cols_per_row
+        ax = axes[r][c] if rows > 1 else axes[c]
+        bp = ax.boxplot(d[col].dropna(), patch_artist=True)
+        bp["boxes"][0].set_alpha(0.7)
+        _setup_dark_axes(ax)
+        ax.set_title(col, color="white", fontsize=10)
+
+    for i in range(len(cols_to_plot), rows * cols_per_row):
+        r, c = i // cols_per_row, i % cols_per_row
+        if rows > 1:
+            fig.delaxes(axes[r][c])
+        else:
+            fig.delaxes(axes[c])
+
+    plt.tight_layout()
+    st.pyplot(fig)
+    plt.close()
+
+
+def render_tab_ai(data: pd.DataFrame, overview: Dict[str, object]) -> None:
+    st.header("🤖 Consulta Inteligente com IA Groq")
+    st.markdown("Faça perguntas sobre seus dados e obtenha insights com modelos avançados.")
+
+    # Chave da API
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        # Prioriza st.secrets se existir (mais seguro)
+        default_key = st.secrets.get("GROQ_API_KEY", "") if hasattr(st, "secrets") else ""
+        api_key = st.text_input("🔑 Insira sua chave da API da Groq:", type="password", value=default_key,
+                                help="Use st.secrets['GROQ_API_KEY'] para evitar digitar toda vez.")
+    with c2:
+        model_options = {
+            "llama-3.3-70b-versatile": "🦙 Llama 3.3 70B (Recomendado)",
+            "llama-3.1-8b-instant": "🦙 Llama 3.1 8B (Rápido)",
+            "openai/gpt-oss-120b": "🧠 GPT OSS 120B (Poderoso)",
+            "openai/gpt-oss-20b": "🧠 GPT OSS 20B (Eficiente)",
+        }
+        selected_model = st.selectbox(
+            "🧠 Escolha o modelo:",
+            options=list(model_options.keys()),
+            format_func=lambda x: model_options[x],
+            index=0,
+        )
+
+    if not api_key:
+        st.info("🔑 Insira sua chave da API da Groq para usar a consulta inteligente.")
+        st.markdown(
+            """
+            **Como obter sua chave da API:**
+            1. console.groq.com → API Keys → New key
+            2. Copie e cole acima
+
+            **Boas práticas:** use `st.secrets` para não digitar a chave sempre e evitar expor em repositórios.
+            """
+        )
+        return
+
+    if Groq is None:
+        st.error("Biblioteca `groq` não instalada. Rode `pip install groq`.")
+        return
+
+    # Contexto “compacto” (evita enviar dados linha a linha)
+    numeric_cols: List[str] = overview["numeric_cols"]  # type: ignore
+    context_summary = {
+        "num_linhas": int(overview["shape"][0]),      # type: ignore
+        "num_colunas": int(overview["shape"][1]),     # type: ignore
+        "colunas": list(map(str, data.columns.tolist())),
+        "tipos": {c: str(t) for c, t in data.dtypes.items()},
+        "nulos": {c: int(data[c].isna().sum()) for c in data.columns},
+        "unicos": {c: int(data[c].nunique(dropna=True)) for c in data.columns},
+        "describe": overview["desc"].to_dict() if overview["desc"] is not None else "sem_numericas",
+    }
+
+    question = st.text_area(
+        "💭 Sua pergunta sobre os dados:",
+        placeholder="Ex.: Quais variáveis mais se correlacionam? Há indícios de sazonalidade?",
+        height=100,
+    )
+
+    with st.expander("⚙️ Configurações Avançadas"):
+        c1, c2 = st.columns(2)
+        with c1:
+            max_tokens = st.slider("Máximo de tokens:", 100, 2000, 1000)
+            temperature = st.slider("Criatividade (temperature):", 0.0, 1.0, 0.7, 0.1)
+        with c2:
+            system_prompt = st.text_area(
+                "Prompt do sistema (opcional):",
+                value="Você é um(a) especialista em análise de dados e ciência de dados.",
+                height=100,
+            )
+
+    if st.button("🚀 Analisar com IA", type="primary"):
+        if not question.strip():
+            st.warning("⚠️ Digite uma pergunta antes de analisar.")
+            return
+
+        with st.spinner(f"🤖 Analisando com {model_options[selected_model]}..."):
+            try:
+                client = Groq(api_key=api_key)
+                prompt = (
+                    "Analise o dataset a partir do resumo abaixo e responda à pergunta com clareza, "
+                    "citando possíveis limitações dos dados quando pertinente.\n\n"
+                    f"RESUMO DO DATASET (compacto):\n{context_summary}\n\n"
+                    f"PERGUNTA DO USUÁRIO: {question}\n"
+                    "Sugira análises complementares se fizer sentido."
+                )
+
+                response = client.chat.completions.create(
+                    model=selected_model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt},
+                    ],
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+
+                st.success("✅ Análise concluída!")
+                st.markdown("### 🎯 Resposta da IA:")
+                st.markdown(response.choices[0].message.content)
+
+                if hasattr(response, "usage"):
+                    with st.expander("📊 Informações de Uso"):
+                        st.write(f"**Tokens usados:** {getattr(response.usage, 'total_tokens', 'N/D')}")
+                        st.write(f"**Modelo:** {selected_model}")
+
+            except Exception as e:
+                st.error(f"❌ Erro ao consultar a API da Groq: {e}")
+                st.info("Verifique a chave e a disponibilidade da API.")
+
+
+# =========================
+# Main (layout e fluxo)
+# =========================
+
+uploaded = st.file_uploader(
+    "Carregue seu arquivo CSV para análise",
+    type=["csv"],
+    help="Selecione um arquivo CSV para análise exploratória",
+)
+
+if uploaded is not None:
+    data, err = load_csv(uploaded)
+    if err:
+        st.error(f"❌ {err}")
+        st.info("Verifique se o arquivo está íntegro, separador e encoding corretos.")
+    elif data.empty:
+        st.warning("Arquivo vazio ou sem colunas legíveis.")
+    else:
+        st.success(f"✅ Arquivo carregado! {data.shape[0]:,} linhas x {data.shape[1]:,} colunas.")
+        overview = get_overview(data)
+
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+            ["📋 Visão Geral", "📊 Distribuições", "🔍 Correlações", "📈 Tendências", "⚠️ Anomalias", "🤖 Consulta IA"]
+        )
+
+        with tab1:
+            render_tab_overview(data, overview)
+        with tab2:
+            render_tab_distributions(data, overview["numeric_cols"], overview["categorical_cols"])  # type: ignore
+        with tab3:
+            render_tab_correlations(data, overview["numeric_cols"])  # type: ignore
+        with tab4:
+            render_tab_trends(data, overview["numeric_cols"], overview["categorical_cols"])  # type: ignore
+        with tab5:
+            render_tab_outliers(data, overview["numeric_cols"])  # type: ignore
+        with tab6:
+            render_tab_ai(data, overview)
 else:
-    # Página inicial quando nenhum arquivo foi carregado
-    st.markdown("""
-    ## 🎯 Bem-vindo ao Agente de Análise de Dados com IA Groq!
-    
-    Esta ferramenta permite realizar análise exploratória completa de qualquer arquivo CSV de forma automática e inteligente, powered by **Groq**.
-    
-    ### 🚀 Funcionalidades:
-    
-    **📋 Visão Geral**
-    - Informações básicas do dataset
-    - Tipos de dados e estatísticas descritivas
-    - Identificação de valores nulos
-    
-    **📊 Distribuições**
-    - Histogramas para variáveis numéricas
-    - Gráficos de barras para variáveis categóricas
-    - Visualizações com alto contraste
-    
-    **🔍 Correlações**
-    - Matriz de correlação entre variáveis
-    - Identificação de relações significativas
-    - Análise de dependências
-    
-    **📈 Tendências**
-    - Análise temporal (quando aplicável)
-    - Padrões em variáveis categóricas
-    - Valores mais e menos frequentes
-    
-    **⚠️ Anomalias**
-    - Detecção automática de outliers
-    - Visualização com boxplots
-    - Estatísticas de anomalias
-    
-    **🤖 Consulta IA com Groq**
-    - Múltiplos modelos: Llama 3.3 70B, Llama 3.1 8B, GPT OSS
-    - Perguntas personalizadas sobre os dados
-    - Insights inteligentes ultra-rápidos
-    - Configurações avançadas personalizáveis
-    
-    ### ⚡ Por que Groq?
-    
-    - **Velocidade incomparável**: Até 10x mais rápido que outras APIs
-    - **Economia**: Tier gratuito muito generoso
-    - **Qualidade**: Modelos de última geração
-    - **Confiabilidade**: Infraestrutura robusta e estável
-    
-    ### 📤 Como usar:
-    1. Carregue seu arquivo CSV usando o botão acima
-    2. Explore as diferentes abas de análise
-    3. Use a IA Groq para fazer perguntas específicas sobre seus dados
-    
-    **💡 Dica:** A ferramenta funciona com qualquer arquivo CSV e se adapta automaticamente às suas características!
-    """)
+    st.markdown(
+        """
+        ## 🎯 Bem-vindo ao Agente de Análise de Dados com IA Groq!
+        Carregue um CSV e explore as abas de análise. Use a IA para perguntas específicas sobre o dataset.
+        """
+    )
