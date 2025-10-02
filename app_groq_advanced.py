@@ -237,65 +237,53 @@ def render_tab_distributions(data: pd.DataFrame, numeric_cols: List[str], catego
     st.header("📊 Distribuição das Variáveis")
 
     # Numéricas
+        # Numéricas
     if numeric_cols:
         st.subheader("Variáveis Numéricas")
-        numeric_cols_to_plot = numeric_cols[:MAX_NUMERIC_HISTS]
-        cols_per_row = 3
-        rows = (len(numeric_cols_to_plot) + cols_per_row - 1) // cols_per_row
+        col_select_num = st.selectbox("Selecione uma variável numérica:", numeric_cols)
+        data_plot = _maybe_sample(data[[col_select_num]], SAMPLE_FOR_PLOTS)
 
-        # amostra para gráficos
-        data_plot = _maybe_sample(data[numeric_cols], SAMPLE_FOR_PLOTS)
+        # Remover extremos para visualização
+        Q1, Q3 = data_plot[col_select_num].quantile([0.01, 0.99])
+        filtered = data_plot[col_select_num].clip(lower=Q1, upper=Q3)
 
-        fig, axes = plt.subplots(rows, cols_per_row, figsize=(15, 5 * rows))
-        fig.patch.set_facecolor(DARK_BG)
-        if rows == 1:
-            axes = axes.reshape(1, -1) if len(numeric_cols_to_plot) > 1 else [axes]
+        fig, ax = _new_fig((10, 6))
+        ax.hist(filtered.dropna(), bins=30, alpha=0.7, edgecolor="white")
+        ax.set_title(f"Distribuição: {col_select_num}", color="white", fontsize=14)
+        _setup_dark_axes(ax)
+        plt.tight_layout()
+        st.pyplot(fig)
+        plt.close()
 
-        for i, col in enumerate(numeric_cols_to_plot):
-            r, c = i // cols_per_row, i % cols_per_row
-            ax = axes[r][c] if rows > 1 else axes[c]
 
-            # Remoção de extremos p/ visualização
-            Q1, Q3 = data_plot[col].quantile([0.01, 0.99])
-            filtered = data_plot[col].clip(lower=Q1, upper=Q3)
+    # Categóricas
+# Categóricas
+        # Categóricas
+    if categorical_cols:
+        st.subheader("Variáveis Categóricas")
+        col_select_cat = st.selectbox("Selecione uma variável categórica:", categorical_cols)
+        vc = _top_frequencies(data[col_select_cat])
 
-            ax.hist(filtered.dropna(), bins=30, alpha=0.7, edgecolor="white")
-            ax.set_title(f"Distribuição: {col}", color="white", fontsize=10)
-            _setup_dark_axes(ax)
+        fig, ax = _new_fig((10, 6))
+        bars = ax.bar(range(len(vc)), vc.values, alpha=0.85)
+        ax.set_title(f"Distribuição: {col_select_cat}", color="white", fontsize=14)
+        ax.set_xticks(range(len(vc)))
+        ax.set_xticklabels(vc.index, rotation=45, ha="right", color="white")
+        _setup_dark_axes(ax)
 
-        # Remove subplots vazios
-        for i in range(len(numeric_cols_to_plot), rows * cols_per_row):
-            r, c = i // cols_per_row, i % cols_per_row
-            if rows > 1:
-                fig.delaxes(axes[r][c])
-            else:
-                fig.delaxes(axes[c])
+        for b, v in zip(bars, vc.values):
+            ax.text(
+                b.get_x() + b.get_width() / 2.0,
+                b.get_height() + 0.01 * vc.values.max(),
+                f"{v:,}",
+                ha="center", va="bottom", color="white", fontsize=9
+            )
 
         plt.tight_layout()
         st.pyplot(fig)
         plt.close()
 
-    # Categóricas
-    if categorical_cols:
-        st.subheader("Variáveis Categóricas")
-        for col in categorical_cols[:MAX_CATEGORICAL_BARS]:
-            vc = _top_frequencies(data[col])
-            fig, ax = _new_fig((10, 6))
-            bars = ax.bar(range(len(vc)), vc.values, alpha=0.85)
-            ax.set_title(f"Distribuição: {col}", color="white", fontsize=14)
-            ax.set_xticks(range(len(vc)))
-            ax.set_xticklabels(vc.index, rotation=45, ha="right", color="white")
-            _setup_dark_axes(ax)
 
-            # labels nas barras
-            height_max = vc.values.max() if len(vc) else 0
-            for b, v in zip(bars, vc.values):
-                ax.text(b.get_x() + b.get_width() / 2.0, b.get_height() + height_max * 0.01, f"{v:,}",
-                        ha="center", va="bottom", color="white", fontsize=9)
-
-            plt.tight_layout()
-            st.pyplot(fig)
-            plt.close()
 
 
 def render_tab_correlations(data: pd.DataFrame, numeric_cols: List[str]) -> None:
@@ -616,6 +604,9 @@ def render_tab_ai(data: pd.DataFrame, overview: Dict[str, object]) -> None:
                 client = Groq(api_key=api_key)
                 prompt = (
                     "Analise o dataset a partir do resumo abaixo e responda à pergunta com clareza, "
+                    "Interaja com o usuário de forma objetiva e sucinta,"
+                    "Sugira análises complementares se fizer sentido,"
+                    "Fale somente baseado em dados e estatísticas, sem sair do contexto do dataset,"
                     "citando possíveis limitações dos dados quando pertinente.\n\n"
                     f"RESUMO DO DATASET (compacto):\n{context_summary}\n\n"
                     f"PERGUNTA DO USUÁRIO: {question}\n"
@@ -724,7 +715,7 @@ if uploaded is not None:
 else:
     st.markdown(
         """
-        ## 🎯 Bem-vindo ao Agente de Análise de Dados com IA Groq!
+        ## 🎯 Bem-vindo ao Agente de Análise de Dados com IA!
         Carregue um CSV e explore as abas de análise. Use a IA para perguntas específicas sobre o dataset.
         """
     )
