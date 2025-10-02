@@ -37,15 +37,9 @@ SAMPLE_FOR_STATS = 250_000  # amostra para estatísticas e correlação
 
 DARK_BG = "#0E1117"
 
-# =========================
-# Setup de página e estilo
-# =========================
 
 # =========================
-# Layout inicial e estilos
-# =========================
 
-# Título e subtítulo centralizados com HTML
 st.markdown(
     """
     <h1 style='text-align: center; color: #00BFFF;'>
@@ -58,47 +52,38 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+
 # CSS customizado
 st.markdown(
     """
     <style>
-    /* Centraliza todo o conteúdo */
+    /* Layout padrão (antes do upload) → centralizado */
     .block-container {
         max-width: 1100px;
         margin: auto;
     }
 
-    /* Muda cor de títulos */
-    h1, h2, h3 {
-        color: #00BFFF;
-        text-align: center;
+    /* Quando tiver tabelas/dataframes (após upload) → ocupa a tela toda */
+    .stDataFrame, .stTable {
+        max-width: 100% !important;
     }
 
-    /* Upload estilizado */
-    section[data-testid="stFileUploader"] {
-        border: 2px dashed #00BFFF;
-        border-radius: 10px;
-        background-color: #111111;
-        padding: 20px;
+    /* Ajusta responsividade das abas */
+    div[data-baseweb="tab-list"] {
+        display: flex;
+        justify-content: space-around;
+        flex-wrap: wrap;
     }
 
-    /* Botões customizados */
-    div.stButton > button {
-        background-color: #00BFFF;
-        color: white;
-        border-radius: 8px;
-        border: none;
-        padding: 10px 20px;
-        font-size: 16px;
-    }
-    div.stButton > button:hover {
-        background-color: #1E90FF;
-        color: white;
+    /* Ajusta largura dos elementos grandes */
+    .element-container {
+        width: 100% !important;
     }
     </style>
     """,
     unsafe_allow_html=True
 )
+
 
 
 # =========================
@@ -604,6 +589,44 @@ uploaded = st.file_uploader(
     type=["csv"],
     help="Selecione um arquivo CSV para análise exploratória",
 )
+
+# CSS condicional
+if uploaded is None:
+    # Antes do upload → centralizado
+    st.markdown(
+        """
+        <style>
+        .block-container {
+            max-width: 1000px;
+            margin: auto;
+            text-align: center;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+else:
+    # Depois do upload → full width responsivo
+    st.markdown(
+        """
+        <style>
+        .block-container {
+            max-width: 100% !important;
+            padding-left: 2rem;
+            padding-right: 2rem;
+        }
+        .stDataFrame, .stTable {
+            max-width: 100% !important;
+        }
+        div[data-baseweb="tab-list"] {
+            display: flex;
+            justify-content: space-around;
+            flex-wrap: wrap;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
 
 if uploaded is not None:
     data, err = load_csv(uploaded)
