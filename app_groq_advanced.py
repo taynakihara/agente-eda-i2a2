@@ -703,11 +703,14 @@ if uploaded is not None:
 
 else:
     st.markdown(
-        """
-        ## 🎯 Bem-vindo ao Agente de Análise de Dados com IA!
-        Carregue um CSV e explore as abas de análise. Use a IA para perguntas específicas sobre o dataset.
-        """
-    )
+    """
+    <div style="text-align: center;">
+        <h2>🎯 Bem-vindo ao Agente de Análise de Dados com IA!</h2>
+        <p>Carregue um CSV e explore as abas de análise. Use a IA para perguntas específicas sobre o dataset.</p>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
 
 
