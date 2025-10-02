@@ -603,9 +603,9 @@ def render_tab_ai(data: pd.DataFrame, overview: Dict[str, object]) -> None:
             try:
                 client = Groq(api_key=api_key)
                 prompt = (
-                    "Analise o dataset a partir do resumo abaixo e responda à pergunta com clareza, "
+                    "Analise o dataset a partir do resumo e responda as pergunta com clareza,"
                     "Interaja com o usuário de forma objetiva e sucinta,"
-                    "Sugira análises complementares se fizer sentido,"
+                    "Responda de forma independente, e aja com inteligência,"
                     "Fale somente baseado em dados e estatísticas, sem sair do contexto do dataset,"
                     "citando possíveis limitações dos dados quando pertinente.\n\n"
                     f"RESUMO DO DATASET (compacto):\n{context_summary}\n\n"
@@ -686,7 +686,9 @@ else:
     )
 
 if uploaded is not None:
-    data, err = load_csv(uploaded)
+    with st.spinner("⏳ Carregando arquivo CSV..."):
+        data, err = load_csv(uploaded)
+
     if err:
         st.error(f"❌ {err}")
         st.info("Verifique se o arquivo está íntegro, separador e encoding corretos.")
@@ -712,10 +714,13 @@ if uploaded is not None:
             render_tab_outliers(data, overview["numeric_cols"])  # type: ignore
         with tab6:
             render_tab_ai(data, overview)
+
 else:
     st.markdown(
         """
-        ## 🎯 Bem-vindo ao Agente de Análise de Dados com IA!
+        ## Bem-vindo ao Agente de Análise de Dados com IA!
         Carregue um CSV e explore as abas de análise. Use a IA para perguntas específicas sobre o dataset.
         """
     )
+
+
