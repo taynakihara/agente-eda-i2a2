@@ -41,9 +41,65 @@ DARK_BG = "#0E1117"
 # Setup de página e estilo
 # =========================
 
-st.set_page_config(**PAGE_CONFIG)
-st.title(APP_TITLE)
-st.markdown(f"**{APP_SUBTITLE}**")
+# =========================
+# Layout inicial e estilos
+# =========================
+
+# Título e subtítulo centralizados com HTML
+st.markdown(
+    """
+    <h1 style='text-align: center; color: #00BFFF;'>
+        🤖 Agente de Análise de Dados (CSV)
+    </h1>
+    <h3 style='text-align: center; color: #AAAAAA;'>
+        Ferramenta inteligente para análise de qualquer arquivo CSV com IA
+    </h3>
+    """,
+    unsafe_allow_html=True
+)
+
+# CSS customizado
+st.markdown(
+    """
+    <style>
+    /* Centraliza todo o conteúdo */
+    .block-container {
+        max-width: 1100px;
+        margin: auto;
+    }
+
+    /* Muda cor de títulos */
+    h1, h2, h3 {
+        color: #00BFFF;
+        text-align: center;
+    }
+
+    /* Upload estilizado */
+    section[data-testid="stFileUploader"] {
+        border: 2px dashed #00BFFF;
+        border-radius: 10px;
+        background-color: #111111;
+        padding: 20px;
+    }
+
+    /* Botões customizados */
+    div.stButton > button {
+        background-color: #00BFFF;
+        color: white;
+        border-radius: 8px;
+        border: none;
+        padding: 10px 20px;
+        font-size: 16px;
+    }
+    div.stButton > button:hover {
+        background-color: #1E90FF;
+        color: white;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 
 # =========================
 # Funções utilitárias
