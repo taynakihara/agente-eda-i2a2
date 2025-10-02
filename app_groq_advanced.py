@@ -100,20 +100,37 @@ def _maybe_sample(df: pd.DataFrame, max_rows: int) -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def load_csv(file) -> Tuple[pd.DataFrame, Optional[str]]:
     """
-    Lê CSV com detecção de separador e fallback de encoding.
-    Evita o problema de carregar tudo como uma coluna só.
+    Lê CSV de forma robusta para o dataset creditcard.csv:
+    - Prioriza separador vírgula (formato oficial).
+    - Fallback automático para outros encodings e detecção de sep.
+    - Evita o bug de '1 coluna só' (header inteiro como string).
     """
     try:
-        df = pd.read_csv(file, sep=None, engine="python", encoding="utf-8", low_memory=False)
-        return df, None
+        # 1) Caminho rápido e eficiente para creditcard.csv
+        file.seek(0)
+        df = pd.read_csv(file, sep=",", encoding="utf-8", low_memory=False, engine="c")
     except Exception:
         try:
             file.seek(0)
-            df = pd.read_csv(file, sep=None, engine="python", encoding="latin1", low_memory=False)
-            return df, None
-        except Exception as e2:
-            return pd.DataFrame(), f"Erro ao carregar CSV: {e2}"
+            df = pd.read_csv(file, sep=",", encoding="latin1", low_memory=False, engine="c")
+        except Exception:
+            # 2) Se ainda assim vier 1 coluna, tenta detecção automática do separador
+            try:
+                file.seek(0)
+                df = pd.read_csv(file, sep=None, engine="python", encoding="utf-8", low_memory=False)
+            except Exception as e2:
+                return pd.DataFrame(), f"Erro ao carregar CSV: {e2}"
 
+    # Correção automática: se vier apenas 1 coluna e ela tem vírgulas dentro, relê com sep=","
+    if df.shape[1] == 1 and df.columns[0].count(",") > 0:
+        try:
+            file.seek(0)
+            df = pd.read_csv(file, sep=",", engine="python", encoding="utf-8", low_memory=False)
+        except Exception:
+            file.seek(0)
+            df = pd.read_csv(file, sep=",", engine="python", encoding="latin1", low_memory=False)
+
+    return df, None
 
 
 
@@ -221,7 +238,7 @@ def render_tab_overview(data: pd.DataFrame, overview: Dict[str, object]) -> None
 def render_tab_distributions(data: pd.DataFrame, numeric_cols: List[str], categorical_cols: List[str]) -> None:
     st.header("📊 Distribuição das Variáveis")
 
-    # -------- Numéricas (uma de cada vez) --------
+    # -------- Numéricas --------
     if numeric_cols:
         st.subheader("Variáveis Numéricas")
         col_select_num = st.selectbox(
@@ -231,6 +248,8 @@ def render_tab_distributions(data: pd.DataFrame, numeric_cols: List[str], catego
         )
         with st.spinner(f"⏳ Gerando histograma de {col_select_num}..."):
             data_plot = _maybe_sample(data[[col_select_num]], SAMPLE_FOR_PLOTS)
+
+            # Clipping leve para visualização (dados bem enviesados, como Amount)
             Q1, Q3 = data_plot[col_select_num].quantile([0.01, 0.99])
             filtered = data_plot[col_select_num].clip(lower=Q1, upper=Q3)
 
@@ -244,7 +263,7 @@ def render_tab_distributions(data: pd.DataFrame, numeric_cols: List[str], catego
     else:
         st.info("Não há variáveis numéricas no dataset.")
 
-    # -------- Categóricas (uma de cada vez) --------
+    # -------- Categóricas --------
     if categorical_cols:
         st.subheader("Variáveis Categóricas")
         col_select_cat = st.selectbox(
@@ -274,33 +293,6 @@ def render_tab_distributions(data: pd.DataFrame, numeric_cols: List[str], catego
             plt.close()
     else:
         st.info("Não há variáveis categóricas no dataset.")
-
-
-        # Categóricas
-    if categorical_cols:
-        st.subheader("Variáveis Categóricas")
-        col_select_cat = st.selectbox("Selecione uma variável categórica:", categorical_cols)
-        vc = _top_frequencies(data[col_select_cat])
-
-        fig, ax = _new_fig((10, 6))
-        bars = ax.bar(range(len(vc)), vc.values, alpha=0.85)
-        ax.set_title(f"Distribuição: {col_select_cat}", color="white", fontsize=14)
-        ax.set_xticks(range(len(vc)))
-        ax.set_xticklabels(vc.index, rotation=45, ha="right", color="white")
-        _setup_dark_axes(ax)
-
-        for b, v in zip(bars, vc.values):
-            ax.text(
-                b.get_x() + b.get_width() / 2.0,
-                b.get_height() + 0.01 * vc.values.max(),
-                f"{v:,}",
-                ha="center", va="bottom", color="white", fontsize=9
-            )
-
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close()
-
 
 
 
@@ -365,6 +357,10 @@ def render_tab_trends(data: pd.DataFrame, numeric_cols: List[str], categorical_c
 
     # -------- Tendências Temporais --------
     tcols = _time_columns(data)
+    # Garante que 'Time' (numérica) seja considerada como temporal
+    if "Time" in data.columns and "Time" not in tcols:
+        tcols = ["Time"] + tcols
+
     if tcols:
         st.subheader("Tendências Temporais")
 
@@ -374,6 +370,7 @@ def render_tab_trends(data: pd.DataFrame, numeric_cols: List[str], categorical_c
             key="trend_time_select"  # chave única
         )
 
+        # Não permitir mesma coluna para tempo e y
         numeric_choices = [c for c in numeric_cols if c != time_col]
         if not numeric_choices:
             st.info("Não há variável numérica disponível diferente da coluna temporal selecionada.")
@@ -386,17 +383,22 @@ def render_tab_trends(data: pd.DataFrame, numeric_cols: List[str], categorical_c
 
             d = data.loc[:, [time_col, numeric_col]].copy()
 
-            # Garante Series mesmo se houver duplicata de nome
+            # Trata coluna temporal:
             time_obj = d[time_col]
             if isinstance(time_obj, pd.DataFrame):
                 time_obj = time_obj.iloc[:, 0]
 
-            # Converte tempo (numérico -> segundos desde base; string/datetime -> to_datetime)
-            if pd.api.types.is_numeric_dtype(time_obj):
+            # Caso específico creditcard.csv: 'Time' é numérica em segundos
+            if time_col == "Time" and pd.api.types.is_numeric_dtype(time_obj):
                 base = pd.Timestamp("2000-01-01")
                 d[time_col] = base + pd.to_timedelta(pd.to_numeric(time_obj, errors="coerce"), unit="s")
             else:
-                d[time_col] = pd.to_datetime(time_obj, errors="coerce")
+                # fallback geral
+                if pd.api.types.is_numeric_dtype(time_obj):
+                    base = pd.Timestamp("2000-01-01")
+                    d[time_col] = base + pd.to_timedelta(pd.to_numeric(time_obj, errors="coerce"), unit="s")
+                else:
+                    d[time_col] = pd.to_datetime(time_obj, errors="coerce")
 
             d = d.dropna(subset=[time_col]).sort_values(time_col)
             d = _maybe_sample(d, SAMPLE_FOR_PLOTS)
@@ -414,13 +416,13 @@ def render_tab_trends(data: pd.DataFrame, numeric_cols: List[str], categorical_c
     else:
         st.info("Não foram identificadas colunas temporais no dataset.")
 
-    # -------- Padrões em Categóricas (com key única) --------
+    # -------- Padrões em Categóricas --------
     if categorical_cols:
         st.subheader("Padrões em Variáveis Categóricas")
         cat_col = st.selectbox(
             "Selecione uma variável categórica:",
             categorical_cols,
-            key="trend_cat_select"  # chave única (evita conflito com aba Distribuições)
+            key="trend_cat_select"  # chave única (evita conflito com 'Distribuições')
         )
         vc = data[cat_col].value_counts(dropna=True)
         c1, c2 = st.columns(2)
@@ -669,44 +671,6 @@ uploaded = st.file_uploader(
     help="Selecione um arquivo CSV para análise exploratória",
 )
 
-# CSS condicional
-if uploaded is None:
-    # Antes do upload → centralizado
-    st.markdown(
-        """
-        <style>
-        .block-container {
-            max-width: 1000px;
-            margin: auto;
-            text-align: center;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
-else:
-    # Depois do upload → full width responsivo
-    st.markdown(
-        """
-        <style>
-        .block-container {
-            max-width: 100% !important;
-            padding-left: 2rem;
-            padding-right: 2rem;
-        }
-        .stDataFrame, .stTable {
-            max-width: 100% !important;
-        }
-        div[data-baseweb="tab-list"] {
-            display: flex;
-            justify-content: space-around;
-            flex-wrap: wrap;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
-
 if uploaded is not None:
     with st.spinner("⏳ Carregando arquivo CSV..."):
         data, err = load_csv(uploaded)
@@ -740,9 +704,10 @@ if uploaded is not None:
 else:
     st.markdown(
         """
-        ## Bem-vindo ao Agente de Análise de Dados com IA!
+        ## 🎯 Bem-vindo ao Agente de Análise de Dados com IA!
         Carregue um CSV e explore as abas de análise. Use a IA para perguntas específicas sobre o dataset.
         """
     )
+
 
 
