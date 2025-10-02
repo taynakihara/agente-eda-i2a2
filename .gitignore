@@ -1,2 +1,28 @@
-# Created by venv; see https://docs.python.org/3/library/venv.html
-* .venv/
+# Ambiente virtual
+.venv/
+venv/
+
+# Cache do Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Configurações locais
+*.env
+*.local
+
+# Cache de ferramentas
+.pytest_cache/
+.mypy_cache/
+.cache/
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Jupyter / IPython
+.ipynb_checkpoints/

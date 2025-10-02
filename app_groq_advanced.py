@@ -100,35 +100,46 @@ def _maybe_sample(df: pd.DataFrame, max_rows: int) -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def load_csv(file) -> Tuple[pd.DataFrame, Optional[str]]:
     """
-    Lê CSV de forma robusta para o dataset creditcard.csv:
-    - Prioriza separador vírgula (formato oficial).
-    - Fallback automático para outros encodings e detecção de sep.
-    - Evita o bug de '1 coluna só' (header inteiro como string).
+    Leitura robusta para creditcard.csv:
+    - Tenta C-engine (rápido) com vírgula e UTF-8 / Latin-1;
+    - Se falhar, tenta engine=python com detecção de separador (sem low_memory).
+    - Corrige caso venha 1 coluna só.
     """
+    # 1) Tenta C-engine + utf-8
     try:
-        # 1) Caminho rápido e eficiente para creditcard.csv
         file.seek(0)
-        df = pd.read_csv(file, sep=",", encoding="utf-8", low_memory=False, engine="c")
+        df = pd.read_csv(file, sep=",", encoding="utf-8", engine="c")
+        return df, None
+    except Exception:
+        pass
+
+    # 2) Tenta C-engine + latin-1
+    try:
+        file.seek(0)
+        df = pd.read_csv(file, sep=",", encoding="latin1", engine="c")
+        return df, None
+    except Exception:
+        pass
+
+    # 3) Fallback: detecção de separador com engine=python (sem low_memory!)
+    try:
+        file.seek(0)
+        df = pd.read_csv(file, sep=None, engine="python", encoding="utf-8")
     except Exception:
         try:
             file.seek(0)
-            df = pd.read_csv(file, sep=",", encoding="latin1", low_memory=False, engine="c")
-        except Exception:
-            # 2) Se ainda assim vier 1 coluna, tenta detecção automática do separador
-            try:
-                file.seek(0)
-                df = pd.read_csv(file, sep=None, engine="python", encoding="utf-8", low_memory=False)
-            except Exception as e2:
-                return pd.DataFrame(), f"Erro ao carregar CSV: {e2}"
+            df = pd.read_csv(file, sep=None, engine="python", encoding="latin1")
+        except Exception as e2:
+            return pd.DataFrame(), f"Erro ao carregar CSV: {e2}"
 
-    # Correção automática: se vier apenas 1 coluna e ela tem vírgulas dentro, relê com sep=","
-    if df.shape[1] == 1 and df.columns[0].count(",") > 0:
+    # 4) Se veio uma coluna só (cabeçalho inteiro), relê com vírgula
+    if df.shape[1] == 1 and isinstance(df.columns[0], str) and ("," in df.columns[0] or ";" in df.columns[0]):
         try:
             file.seek(0)
-            df = pd.read_csv(file, sep=",", engine="python", encoding="utf-8", low_memory=False)
+            df = pd.read_csv(file, sep=",", engine="python", encoding="utf-8")
         except Exception:
             file.seek(0)
-            df = pd.read_csv(file, sep=",", engine="python", encoding="latin1", low_memory=False)
+            df = pd.read_csv(file, sep=",", engine="python", encoding="latin1")
 
     return df, None
 
