@@ -357,6 +357,72 @@ def render_tab_correlations(data: pd.DataFrame, numeric_cols: List[str]) -> None
 def render_tab_trends(data: pd.DataFrame, numeric_cols: List[str], categorical_cols: List[str]) -> None:
     st.header("📈 Análise de Tendências")
 
+    # Detectar colunas temporais
+    tcols = _time_columns(data)
+    if tcols:
+        st.subheader("Tendências Temporais")
+
+        time_col = st.selectbox("Selecione a coluna temporal:", tcols)
+
+        # Garantir que a variável numérica seja diferente da coluna temporal
+        numeric_choices = [c for c in numeric_cols if c != time_col]
+        if not numeric_choices:
+            st.info("Não há variável numérica disponível diferente da coluna temporal selecionada.")
+            return
+
+        numeric_col = st.selectbox("Selecione a variável para análise temporal:", numeric_choices)
+
+        if time_col and numeric_col:
+            # Criar dataframe com cópia segura
+            d = data.loc[:, [time_col, numeric_col]].copy()
+
+            # Se existir duplicata, garantir que seja Series
+            time_obj = d[time_col]
+            if isinstance(time_obj, pd.DataFrame):
+                time_obj = time_obj.iloc[:, 0]
+
+            # Se a coluna for numérica, tratar como segundos desde uma data base
+            if pd.api.types.is_numeric_dtype(time_obj):
+                base = pd.Timestamp("2000-01-01")
+                d[time_col] = base + pd.to_timedelta(pd.to_numeric(time_obj, errors="coerce"), unit="s")
+            else:
+                d[time_col] = pd.to_datetime(time_obj, errors="coerce")
+
+            # Limpar dados inválidos
+            d = d.dropna(subset=[time_col])
+            d = d.sort_values(time_col)
+
+            # Amostragem para não travar
+            d = _maybe_sample(d, SAMPLE_FOR_PLOTS)
+
+            # Plotar
+            fig, ax = _new_fig((12, 6))
+            ax.plot(d[time_col], d[numeric_col], alpha=0.8)
+            ax.set_title(f"Tendência Temporal: {numeric_col}", color="white", fontsize=14)
+            ax.set_xlabel("Tempo", color="white")
+            ax.set_ylabel(numeric_col, color="white")
+            _setup_dark_axes(ax)
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close()
+    else:
+        st.info("Não foram identificadas colunas temporais no dataset.")
+
+    # Padrões categóricos
+    if categorical_cols:
+        st.subheader("Padrões em Variáveis Categóricas")
+        cat_col = st.selectbox("Selecione uma variável categórica:", categorical_cols)
+        if cat_col:
+            vc = data[cat_col].value_counts(dropna=True)
+            c1, c2 = st.columns(2)
+            with c1:
+                st.write("**Valores Mais Frequentes:**")
+                st.dataframe(vc.head(10).reset_index(names=[cat_col, "contagem"]), use_container_width=True)
+            with c2:
+                st.write("**Valores Menos Frequentes:**")
+                st.dataframe(vc.tail(10).reset_index(names=[cat_col, "contagem"]), use_container_width=True)
+
+
     # Colunas temporais
     tcols = _time_columns(data)
     if tcols:
